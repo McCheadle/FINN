@@ -74,16 +74,26 @@ ticker_lookup_file = "data/company_tickers.json"
 
 def main():
     YEAR = 2025
-    QUARTER = 2
+    QUARTER = 1
     FORM_TYPE = "10-K"
     request_rate = 0.1
     CIK_Lookup_df = pd.read_json(ticker_lookup_file).T
     MAX_KBYTES = 50000
-    BLACKLIST = [] 
-    BLACKLIST_FILE = Path("data/blacklisted_CIKs.txt")
+    BLACKLIST_FILE = Path("data/blacklist.csv")
 
-    with open(BLACKLIST_FILE, 'r') as f:
-        BLACKLIST = [line.strip() for line in f if line.strip()]
+    if BLACKLIST_FILE.exists():
+        blacklist_df = pd.read_csv(BLACKLIST_FILE, dtype={"cik": int})
+        BLACKLIST = set(blacklist_df["cik"].tolist())
+    else:
+        blacklist_df = pd.DataFrame(columns=["cik", "ticker", "reason"])
+        BLACKLIST = set()
+
+    def add_to_blacklist(cik, ticker, reason):
+        nonlocal blacklist_df
+        BLACKLIST.add(cik)
+        new_row = pd.DataFrame([{"cik": cik, "ticker": ticker, "reason": reason}])
+        blacklist_df = pd.concat([blacklist_df, new_row], ignore_index=True)
+        blacklist_df.to_csv(BLACKLIST_FILE, index=False)
 
     save_path = Path(f"data/form_indexes/form_index_{FORM_TYPE}_{YEAR}_Q{QUARTER}.csv")
     if save_path.exists():
@@ -97,13 +107,13 @@ def main():
         #cache the index in storage
         df.to_csv(save_path, index=False)
     
+    start = time.perf_counter() + request_rate
     progress_bar = tqdm(df.iterrows(), total=len(df), desc=f"Scraping {FORM_TYPE}'s")
     for index, row in progress_bar:
-        start = time.perf_counter()
-
+        
         CIK = int(row['cik'])
         ticker = Lookup_Ticker_from_CIK(CIK, CIK_Lookup_df)
-        if str(CIK) in BLACKLIST:
+        if CIK in BLACKLIST:
             continue
 
         if ticker is not None:
@@ -117,10 +127,15 @@ def main():
         local_file_path = local_file_dir / f"{FORM_TYPE}_{YEAR}_Q{QUARTER}.html"
 
         if not local_file_path.exists():
+            elapsed_time = time.perf_counter() - start
+            remaining = request_rate - elapsed_time
+            if (remaining > 0):
+                time.sleep(remaining)
             form_file_path = row['file_name']
             file_url = f"{EDGAR_ARCHIVES}/{form_file_path}"
             response = requests.get(file_url, headers=HEADERS)
             response.raise_for_status()
+            start = time.perf_counter()
             with open(local_file_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
 
@@ -135,25 +150,13 @@ def main():
             try:
                 df_Contexts, df_Values = Extract_Contexts_and_Values_from_xbrl(local_file_path)
                 if df_Contexts is None or df_Values is None:
-                    with open(BLACKLIST_FILE, 'a') as f:
-                        f.write(f"{CIK}\n")
-                    BLACKLIST.append(CIK)
+                    add_to_blacklist(CIK, ticker, "Inconsistent format")
                     continue
                 df_Contexts.to_csv(contexts_file_path, index=False)
                 df_Values.to_csv(values_file_path, index=False)
-            except Exception:
-                with open(BLACKLIST_FILE, 'a') as f:
-                        f.write(f"{CIK}\n")
-                BLACKLIST.append(CIK)
+            except Exception as e:
+                add_to_blacklist(CIK, ticker, str(e))
                 continue
-
-        else:
-            continue
-
-        elapsed_time = time.perf_counter() - start
-        remaining = request_rate - elapsed_time
-        if (remaining > 0):
-            time.sleep(remaining)
 
     
 
