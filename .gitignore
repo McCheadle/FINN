@@ -3,7 +3,7 @@ data/
 
 *_test.py
 
-.log
+*.log
 
 Old_files/
 __pycache__/
