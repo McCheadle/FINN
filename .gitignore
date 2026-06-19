@@ -6,3 +6,4 @@ data/
 .log
 
 Old_files/
+__pycache__/
